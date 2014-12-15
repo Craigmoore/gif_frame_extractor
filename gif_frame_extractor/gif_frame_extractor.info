@@ -1,0 +1,3 @@
+name = "GIF Frame Extractor"
+description = "Module to extract GIF frames from an animated GIF"
+core = "7.x"

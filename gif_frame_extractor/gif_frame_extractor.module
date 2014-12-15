@@ -1,0 +1,239 @@
+<?php
+
+include_once DRUPAL_ROOT . '/' . drupal_get_path('module', 'gif_frame_extractor') . '/libs/GifFrameExtractor/src/GifFrameExtractor/GifFrameExtractor.php';
+
+/**
+ * Implements hook_field_formatter_info().
+ */
+function gif_frame_extractor_field_formatter_info() {
+  $formatters = array(
+    'gif_frame_extractor' => array(
+      'label' => t('GIF Frame Extractor'),
+      'field types' => array('image'),
+      'settings' => array('image_style' => '', 'image_link' => '', 'generate_records' => false),
+    ),
+  );
+
+  return $formatters;
+}
+
+/**
+ * Implements hook_field_formatter_settings_form().
+ */
+function gif_frame_extractor_field_formatter_settings_form($field, $instance, $view_mode, $form, &$form_state) {
+  $display = $instance['display'][$view_mode];
+  $settings = $display['settings'];
+
+  $image_styles = image_style_options(FALSE, PASS_THROUGH);
+  $element['image_style'] = array(
+    '#title' => t('Image style'),
+    '#type' => 'select',
+    '#default_value' => $settings['image_style'],
+    '#empty_option' => t('None (original image)'),
+    '#options' => $image_styles,
+  );
+
+  $link_types = array(
+    'content' => t('Content'),
+    'file' => t('File'),
+  );
+  $element['image_link'] = array(
+    '#title' => t('Link image to'),
+    '#type' => 'select',
+    '#default_value' => $settings['image_link'],
+    '#empty_option' => t('Nothing'),
+    '#options' => $link_types,
+  );
+  
+  $element['generate_records'] = array(
+    '#title' => t('Create Records'),
+    '#type' => 'checkbox',
+    '#default_value' => $settings['generate_records'],
+  );
+
+  return $element;
+}
+
+/**
+ * Implements hook_field_formatter_settings_summary().
+ */
+function gif_frame_extractor_field_formatter_settings_summary($field, $instance, $view_mode) {
+  $display = $instance['display'][$view_mode];
+  $settings = $display['settings'];
+
+  $summary = array();
+
+  $image_styles = image_style_options(FALSE, PASS_THROUGH);
+  // Unset possible 'No defined styles' option.
+  unset($image_styles['']);
+  // Styles could be lost because of enabled/disabled modules that defines
+  // their styles in code.
+  if (isset($image_styles[$settings['image_style']])) {
+    $summary[] = t('Image style: @style', array('@style' => $image_styles[$settings['image_style']]));
+  }
+  else {
+    $summary[] = t('Original image');
+  }
+
+  $link_types = array(
+    'content' => t('Linked to content'),
+    'file' => t('Linked to file'),
+  );
+  // Display this setting only if image is linked.
+  if (isset($link_types[$settings['image_link']])) {
+    $summary[] = $link_types[$settings['image_link']];
+  }
+  
+  if (!empty($settings['generate_records'])) {
+    $summary[] = t('Generating records for each extracted frame.');
+  }
+
+  return implode('<br />', $summary);
+}
+
+/**
+ * Implements hook_field_formatter_view().
+ */
+function gif_frame_extractor_field_formatter_view($entity_type, $entity, $field, $instance, $langcode, $items, $display) {
+  $element = array();
+
+  // Check if the formatter involves a link.
+  if ($display['settings']['image_link'] == 'content') {
+    $uri = entity_uri($entity_type, $entity);
+  }
+  elseif ($display['settings']['image_link'] == 'file') {
+    $link_file = TRUE;
+  }
+
+  foreach ($items as $delta => $item) {
+    if (isset($link_file)) {
+      $uri = array(
+        'path' => file_create_url($item['uri']),
+        'options' => array(),
+      );
+    }
+    
+    $generated_records = $display['settings']['generate_records'] ? true : false;
+    $extracted_items = _gif_frame_extractor_extract_items($item, $generated_records);
+    
+    $element[$delta] = array(
+        '#tree' => TRUE,
+    );
+    
+    foreach ($extracted_items as $extracted_item_id => $extracted_item) {
+        
+        $element[$delta][$extracted_item_id] = array(
+          '#theme' => 'image_formatter',
+          '#item' => $extracted_item,
+          '#image_style' => $display['settings']['image_style'],
+          '#path' => isset($uri) ? $uri : '',
+        );
+    }
+  }
+
+  return $element;
+}
+
+function _gif_frame_extractor_extract_items($item, $generate_records) {
+    
+    // Initialise new array of items to be output by formatter view
+    $items = array();
+
+    // Retrieve the scheme for the current image
+    $scheme = file_uri_scheme($item['uri']);
+
+    // If it isn't in public or private, reject it
+    if (!in_array($scheme, array('public', 'private'))) {
+
+        $items[] = $item;
+        return $items;
+    }
+
+    // Extract the file name from the uri
+    $uri_pieces = explode('/', $item['uri']);
+
+    // Final piece is the one we are after
+    $filename = $uri_pieces[count($uri_pieces) - 1];
+
+    // Remove the filename from the uri pieces as we will be using it later
+    unset($uri_pieces[count($uri_pieces) - 1]);
+    $uri_prefix = implode('/', $uri_pieces);
+
+    // Now extract the filename without extension
+    $filename_pieces = explode('.', $filename);
+    
+    unset($filename_pieces[count($filename_pieces) - 1]);
+    $filename = implode('.', $filename_pieces);
+  
+    $resolved_image_path = drupal_realpath($item['uri']);
+    
+    // If able to resolve the image path, we can attempt to load the image
+    if ($resolved_image_path) {
+    
+      // check this is an animated GIF
+      if (\GifFrameExtractor\GifFrameExtractor::isAnimatedGif($resolved_image_path)) {
+
+        $gfe = new \GifFrameExtractor\GifFrameExtractor();
+        $gfe->extract($resolved_image_path);
+
+        if ($wrapper = file_stream_wrapper_get_instance_by_uri($scheme . '://')) {
+          $realpath = $wrapper->realpath();
+        }
+        
+        $image_frame_delta = 0;
+        
+        foreach ($gfe->getFrames() as $frame) {
+
+            // The frame resource image var
+            $img = $frame['image'];
+            
+            $new_file_path = $realpath . '/' . $filename . '.' . $image_frame_delta . '.png';
+            $new_uri = $uri_prefix . '/' . $filename . '.' . $image_frame_delta . '.png';
+            
+            if (!file_exists($new_file_path)) {
+                imagepng($img, $new_file_path);
+            }
+            
+            if ($generate_records) {
+
+                // If we are creating file records, check first that they don't exist already
+                $fid_query = db_select('file_managed');
+                $fid_query->addField('file_managed', 'fid');
+                $fid_query->condition('uri', db_like($new_uri), 'LIKE');
+                $ids = $fid_query->execute()->fetchCol();
+
+                // If the record doesn't exist, create it
+                if (!empty($ids)) {
+                    // File already has an associated entity
+                    $file_entity = file_load($ids[0]);
+                }
+                else {
+                    $file = file_uri_to_object($new_uri);
+                    $file_entity = file_save($file);
+                }
+
+                // Convert loaded object into array for consumption by theme_image_formatter
+                $new_item = get_object_vars($file_entity);
+
+                // Copy across original alt and title from 
+                if (empty($new_item['alt'])) $new_item['alt'] = $item['alt'];
+                if (empty($new_item['title'])) $new_item['title'] = $item['title'];
+            }
+            else {
+                $new_item = $item;
+                $new_item['uri'] = $new_uri;
+            }
+
+            $items[] = $new_item;
+
+            $image_frame_delta ++;
+        }
+      }
+    }
+    else {
+        // Unable to pull it from local filesystem, just return it as it is
+        $items[] = $item;
+        return $items;
+    }
+    return $items;
+}
