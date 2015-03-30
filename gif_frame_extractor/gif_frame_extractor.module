@@ -134,106 +134,218 @@ function gif_frame_extractor_field_formatter_view($entity_type, $entity, $field,
   return $element;
 }
 
-function _gif_frame_extractor_extract_items($item, $generate_records) {
+/*
+ * This function is identical to _gif_frame_extractor_extract_items
+ * Except that it acts upon a pure uri and returns a list of uris
+ * It will generate file_entity records if TRUE is passed as second parameter
+ */
+function _gif_frame_extractor_extract_images($uri, $generate_records) {
+  $images = array();
+
+  // Retrieve the scheme for the current image
+  $scheme = file_uri_scheme($uri);
+
+  // If it isn't in public or private, reject it
+  if (!in_array($scheme, array('public', 'private'))) {
+
+      $items[] = $item;
+      return $items;
+  }
     
-    // Initialise new array of items to be output by formatter view
-    $items = array();
+  // Extract the file name from the uri
+  $uri_pieces = explode('/', $item['uri']);
 
-    // Retrieve the scheme for the current image
-    $scheme = file_uri_scheme($item['uri']);
+  // Final piece is the one we are after
+  $filename = $uri_pieces[count($uri_pieces) - 1];
 
-    // If it isn't in public or private, reject it
-    if (!in_array($scheme, array('public', 'private'))) {
+  // Remove the filename from the uri pieces as we will be using it later
+  unset($uri_pieces[count($uri_pieces) - 1]);
+  $uri_prefix = implode('/', $uri_pieces);
 
-        $items[] = $item;
-        return $items;
-    }
-
-    // Extract the file name from the uri
-    $uri_pieces = explode('/', $item['uri']);
-
-    // Final piece is the one we are after
-    $filename = $uri_pieces[count($uri_pieces) - 1];
-
-    // Remove the filename from the uri pieces as we will be using it later
-    unset($uri_pieces[count($uri_pieces) - 1]);
-    $uri_prefix = implode('/', $uri_pieces);
-
-    // Now extract the filename without extension
-    $filename_pieces = explode('.', $filename);
+  // Now extract the filename without extension
+  $filename_pieces = explode('.', $filename);
     
-    unset($filename_pieces[count($filename_pieces) - 1]);
-    $filename = implode('.', $filename_pieces);
+  unset($filename_pieces[count($filename_pieces) - 1]);
+  $filename = implode('.', $filename_pieces);
   
-    $resolved_image_path = drupal_realpath($item['uri']);
+  $resolved_image_path = drupal_realpath($item['uri']);
+   
+  // If able to resolve the image path, we can attempt to load the image
+  if ($resolved_image_path) {
     
-    // If able to resolve the image path, we can attempt to load the image
-    if ($resolved_image_path) {
-    
-      // check this is an animated GIF
-      if (\GifFrameExtractor\GifFrameExtractor::isAnimatedGif($resolved_image_path)) {
+    // check this is an animated GIF
+    if (!\GifFrameExtractor\GifFrameExtractor::isAnimatedGif($resolved_image_path)) {
+      // Unable to pull it from local filesystem, just return it as it is
+      $items[] = $item;
+      return $items;
+    }
+    else {
 
-        $gfe = new \GifFrameExtractor\GifFrameExtractor();
-        $gfe->extract($resolved_image_path);
+      // Where the real magic happens
+      $gfe = new \GifFrameExtractor\GifFrameExtractor();
+      $gfe->extract($resolved_image_path);
 
-        if ($wrapper = file_stream_wrapper_get_instance_by_uri($scheme . '://')) {
-          $realpath = $wrapper->realpath();
+      if ($wrapper = file_stream_wrapper_get_instance_by_uri($scheme . '://')) {
+        $realpath = $wrapper->realpath();
+      }
+
+      $image_frame_delta = 0;
+        
+      foreach ($gfe->getFrames() as $frame) {
+        // The frame resource image var
+        $img = $frame['image'];
+            
+        $new_file_path = $realpath . '/' . $filename . '.' . $image_frame_delta . '.png';
+        $new_uri = $uri_prefix . '/' . $filename . '.' . $image_frame_delta . '.png';
+        
+        // The extracted frames are automatically saved to the file system, even if a record isn't created
+        if (!file_exists($new_file_path)) {
+          imagepng($img, $new_file_path);
         }
-        
-        $image_frame_delta = 0;
-        
-        foreach ($gfe->getFrames() as $frame) {
-
-            // The frame resource image var
-            $img = $frame['image'];
             
-            $new_file_path = $realpath . '/' . $filename . '.' . $image_frame_delta . '.png';
-            $new_uri = $uri_prefix . '/' . $filename . '.' . $image_frame_delta . '.png';
-            
-            if (!file_exists($new_file_path)) {
-                imagepng($img, $new_file_path);
-            }
-            
-            if ($generate_records) {
+        if ($generate_records) {
 
-                // If we are creating file records, check first that they don't exist already
-                $fid_query = db_select('file_managed');
-                $fid_query->addField('file_managed', 'fid');
-                $fid_query->condition('uri', db_like($new_uri), 'LIKE');
-                $ids = $fid_query->execute()->fetchCol();
+          // If we are creating file records, check first that they don't exist already
+          $fid_query = db_select('file_managed');
+          $fid_query->addField('file_managed', 'fid');
+          $fid_query->condition('uri', db_like($new_uri), 'LIKE');
+          $ids = $fid_query->execute()->fetchCol();
 
-                // If the record doesn't exist, create it
-                if (!empty($ids)) {
-                    // File already has an associated entity
-                    $file_entity = file_load($ids[0]);
-                }
-                else {
-                    $file = file_uri_to_object($new_uri);
-                    $file_entity = file_save($file);
-                }
+          // If the record doesn't exist, create it
+          if (!empty($ids)) {
+            // File already has an associated entity
+            $file_entity = file_load($ids[0]);
+          }
+          else {
+            $file = file_uri_to_object($new_uri);
+            $file_entity = file_save($file);
+          }
 
-                // Convert loaded object into array for consumption by theme_image_formatter
-                $new_item = get_object_vars($file_entity);
+          // Convert loaded object into array for consumption by theme_image_formatter
+                
+          $images[] = $file_entity->uri;
 
-                // Copy across original alt and title from 
-                if (empty($new_item['alt'])) $new_item['alt'] = $item['alt'];
-                if (empty($new_item['title'])) $new_item['title'] = $item['title'];
-            }
-            else {
-                $new_item = $item;
-                $new_item['uri'] = $new_uri;
-            }
-
-            $items[] = $new_item;
-
-            $image_frame_delta ++;
+          // Copy across original alt and title from 
+        }
+        else {
+          $images[] = $new_uri;
         }
       }
     }
-    else {
-        // Unable to pull it from local filesystem, just return it as it is
-        $items[] = $item;
-        return $items;
-    }
+  }
+
+  return $images;
+}
+
+/*
+ * This function is complicated because it is using a field item, extracting
+ * the uri, using it to load the image, generating new filenames
+ * Then using those filenames to create new files if not already extracted
+ * and then if required to, generate new records and then return those records
+ * As items
+ */
+function _gif_frame_extractor_extract_items($item, $generate_records) {
+    
+  // Initialise new array of items to be output by formatter view
+  $items = array();
+
+  // Retrieve the scheme for the current image
+  $scheme = file_uri_scheme($item['uri']);
+
+  // If it isn't in public or private, reject it
+  if (!in_array($scheme, array('public', 'private'))) {
+
+    $items[] = $item;
     return $items;
+  }
+
+  // Extract the file name from the uri
+  $uri_pieces = explode('/', $item['uri']);
+
+  // Final piece is the one we are after
+  $filename = $uri_pieces[count($uri_pieces) - 1];
+
+  // Remove the filename from the uri pieces as we will be using it later
+  unset($uri_pieces[count($uri_pieces) - 1]);
+  $uri_prefix = implode('/', $uri_pieces);
+
+  // Now extract the filename without extension
+  $filename_pieces = explode('.', $filename);
+
+  unset($filename_pieces[count($filename_pieces) - 1]);
+  $filename = implode('.', $filename_pieces);
+
+  $resolved_image_path = drupal_realpath($item['uri']);
+
+  // If able to resolve the image path, we can attempt to load the image
+  if ($resolved_image_path) {
+
+    // check this is an animated GIF
+    if (!\GifFrameExtractor\GifFrameExtractor::isAnimatedGif($resolved_image_path)) {
+      // Unable to pull it from local filesystem, just return it as it is
+      $items[] = $item;
+      return $items;
+    }
+    else {
+
+      // Where the real magic happens
+      $gfe = new \GifFrameExtractor\GifFrameExtractor();
+      $gfe->extract($resolved_image_path);
+
+      if ($wrapper = file_stream_wrapper_get_instance_by_uri($scheme . '://')) {
+        $realpath = $wrapper->realpath();
+      }
+
+      $image_frame_delta = 0;
+
+      foreach ($gfe->getFrames() as $frame) {
+
+        // The frame resource image var
+        $img = $frame['image'];
+
+        $new_file_path = $realpath . '/' . $filename . '.' . $image_frame_delta . '.png';
+        $new_uri = $uri_prefix . '/' . $filename . '.' . $image_frame_delta . '.png';
+
+        if (!file_exists($new_file_path)) {
+          imagepng($img, $new_file_path);
+        }
+
+        if ($generate_records) {
+
+          // If we are creating file records, check first that they don't exist already
+          $fid_query = db_select('file_managed');
+          $fid_query->addField('file_managed', 'fid');
+          $fid_query->condition('uri', db_like($new_uri), 'LIKE');
+          $ids = $fid_query->execute()->fetchCol();
+
+          // If the record doesn't exist, create it
+          if (!empty($ids)) {
+            // File already has an associated entity
+            $file_entity = file_load($ids[0]);
+          }
+          else {
+            $file = file_uri_to_object($new_uri);
+            $file_entity = file_save($file);
+          }
+
+          // Convert loaded object into array for consumption by theme_image_formatter
+          $new_item = get_object_vars($file_entity);
+  
+          // Copy across original alt and title from 
+          if (empty($new_item['alt'])) $new_item['alt'] = $item['alt'];
+          if (empty($new_item['title'])) $new_item['title'] = $item['title'];
+        }
+        else {
+          $new_item = $item;
+          $new_item['uri'] = $new_uri;
+        }
+  
+        $items[] = $new_item;
+  
+        $image_frame_delta ++;
+      }
+    }
+  }
+  
+  return $items;
 }
