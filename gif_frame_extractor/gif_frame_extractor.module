@@ -148,12 +148,12 @@ function _gif_frame_extractor_extract_images($uri, $generate_records) {
   // If it isn't in public or private, reject it
   if (!in_array($scheme, array('public', 'private'))) {
 
-      $items[] = $item;
-      return $items;
+      $images[] = $uri;
+      return $images;
   }
     
   // Extract the file name from the uri
-  $uri_pieces = explode('/', $item['uri']);
+  $uri_pieces = explode('/', $uri);
 
   // Final piece is the one we are after
   $filename = $uri_pieces[count($uri_pieces) - 1];
@@ -168,7 +168,7 @@ function _gif_frame_extractor_extract_images($uri, $generate_records) {
   unset($filename_pieces[count($filename_pieces) - 1]);
   $filename = implode('.', $filename_pieces);
   
-  $resolved_image_path = drupal_realpath($item['uri']);
+  $resolved_image_path = drupal_realpath($uri);
    
   // If able to resolve the image path, we can attempt to load the image
   if ($resolved_image_path) {
@@ -176,8 +176,8 @@ function _gif_frame_extractor_extract_images($uri, $generate_records) {
     // check this is an animated GIF
     if (!\GifFrameExtractor\GifFrameExtractor::isAnimatedGif($resolved_image_path)) {
       // Unable to pull it from local filesystem, just return it as it is
-      $items[] = $item;
-      return $items;
+      $images[] = $uri;
+      return $images;
     }
     else {
 
