@@ -230,6 +230,8 @@ function _gif_frame_extractor_extract_images($uri, $generate_records) {
         else {
           $images[] = $new_uri;
         }
+        
+        $image_frame_delta ++;
       }
     }
   }
